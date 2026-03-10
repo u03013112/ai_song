@@ -278,3 +278,4 @@ def separate_vocals(input_path: Path, output_dir: Path) -> tuple[Path, Path]:
 - Branch from `main` for features: `feature/<name>`
 - Keep commits atomic and descriptive
 - Do not commit audio files, model weights, or .env files
+- 当用户说"提交代码"时，默认执行 commit + push（即 CI & push）
