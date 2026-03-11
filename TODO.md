@@ -4,15 +4,22 @@
 
 ### 阶段一：环境搭建
 
-- [ ] 初始化 Python 项目结构（pyproject.toml / requirements.txt）
-- [ ] 集成 `yt-dlp`，实现从 B站 URL 直接提取音频为 WAV 格式
-- [ ] 验证 macOS (Apple Silicon M5) 上 PyTorch MPS 后端可用
+- [x] 初始化 Python 项目结构（pyproject.toml / requirements.txt）
+- [x] 集成 `yt-dlp`，实现从 B站 URL 直接提取音频为 WAV 格式
+- [x] 验证 macOS (Apple Silicon M5) 上 PyTorch MPS 后端可用
+
+> **实测记录**：Python 3.11.3, PyTorch 2.10.0, MPS 正常。
+> 测试下载 B站视频 BV1hpPszEEfv（《海阔天空》女烟嗓撕裂版），yt-dlp 提取 WAV 成功，5MB 压缩 → 43MB WAV（4分17秒）。
 
 ### 阶段二：声音分离
 
-- [ ] 集成 `audio-separator`，使用 BS-RoFormer 模型（SDR 12.0+，当前 SOTA）
-- [ ] 输出 vocals + instrumental 两轨（V1 不分主唱/伴唱，整体人声一起处理）
-- [ ] CLI 入口：`python -m ai_song.separate --input song.wav --output-dir output/`
+- [x] 集成 `audio-separator` 0.41.1，使用 BS-RoFormer 模型（SDR 12.0+，当前 SOTA）
+- [x] 输出 vocals + instrumental 两轨（V1 不分主唱/伴唱，整体人声一起处理）
+- [x] CLI 入口：`python -m ai_song.separate --input song.wav --output-dir output/`
+
+> **实测记录**：模型 `model_bs_roformer_ep_368_sdr_12.9628`（610MB），首次需下载。
+> 处理《海阔天空》4分17秒歌曲，分离用时 4分32秒（约 1:1 实时），效果良好。
+> V1.5 切换 mlx-audio-separator 后预计可降至 ~3 秒。
 
 ### 阶段三：声音变换 & 变调
 
