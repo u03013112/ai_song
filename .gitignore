@@ -208,3 +208,10 @@ __marimo__/
 
 # Editor local history
 .history/
+
+# Audio files and pipeline output
+output/
+downloads/
+*.wav
+*.mp3
+*.flac
