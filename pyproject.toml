@@ -10,7 +10,12 @@ dependencies = [
     "torchaudio>=2.0",
     "numpy>=1.24",
     "soundfile>=0.12",
+    "pyloudnorm>=0.1",
+    "pedalboard>=0.9",
 ]
+
+[project.scripts]
+ai-song = "ai_song.__main__:main"
 
 [project.optional-dependencies]
 dev = [
