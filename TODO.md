@@ -24,30 +24,50 @@
 
 ### 阶段三：声音变换 & 变调
 
-- [ ] 集成 RVC 推理，支持加载社区预训练模型（.pth）
-- [ ] 支持 `transpose` 参数（半音为单位，范围 -12 ~ +12）
-- [ ] 集成 `pedalboard`（Spotify 开源，内置 Rubberband），实现伴奏 pitch shift
-- [ ] 支持混合变调策略：当差距较大时，伴奏和人声各分担一部分 pitch shift
+- [x] 集成 RVC 推理，支持加载社区预训练模型（.pth）
+- [x] 支持 `transpose` 参数（半音为单位，范围 -12 ~ +12）
+- [x] 集成 `pedalboard`（Spotify 开源，内置 Rubberband），实现伴奏 pitch shift
+- [x] 支持混合变调策略：当差距较大时，伴奏和人声各分担一部分 pitch shift
   - 例：需要 +5 → 伴奏 shift +2，人声 transpose +3，两边都在安全范围内
   - 人声 transpose 安全范围：±4 半音以内质量几乎无损
   - 伴奏 pitch shift 安全范围：±2 半音以内几乎透明
 - [ ] 实现批量模型试听：输入一段音频片段（如副歌），对多个模型依次推理，输出对比音频
-- [ ] CLI 入口：`python -m ai_song.convert --input vocals.wav --model model.pth --transpose 0 --instrumental-shift 0`
+- [x] CLI 入口：`python -m ai_song.convert --input vocals.wav --model model.pth --transpose 0 --instrumental-shift 0`
+
+> **实测记录**：使用 Ariana Grande RVC v1 模型（52MB），`index_rate=0` 绕过 faiss-cpu Apple Silicon SEGFAULT。
+> 4分17秒完整人声转换用时 31.8 秒（约 8:1 速度比），MPS 加速正常。
+> **已知限制**：`faiss-cpu` 在 ARM64 macOS 上 SEGFAULT，`index_rate` 暂设为 0（不使用 .index 特征检索），timbre 还原度略低但可接受。
+> **已知问题**（Ariana Grande + 《海阔天空》女烟嗓）：
+> 1. 高音部分效果差，出现断音/失真——超出模型训练音域时 RVC 推理质量急剧下降
+> 2. 伴唱表现差，很多时候不能清楚发音——可能与 `index_rate=0`（无特征检索）及模型本身对中文适配不佳有关
+>
+> **可能的改善方案**：
+> - 换用音域更宽或中低音更强的模型（如 Adele、Taylor Swift 等中音区饱满的歌手）
+> - 使用 `--transpose -2~-4` 降调，让高音落回模型甜区
+> - 混合变调策略：`--transpose -3 --instrumental-shift -1`，各自在安全范围
+> - 启用 `index_rate`（需修复 faiss 或换 RVC 引擎）提升 timbre 还原度
+> - 换用华语歌手模型（需从 mxgf.cc 或百度网盘获取，非免费）
+> - V2 Bounce-Back 变调技法：先 pitch shift 到甜区 → RVC transpose=0 → shift 回原调
 
 ### 阶段四：混音合成
 
-- [ ] 响度对齐：将 vocals 和伴奏的 LUFS 匹配到统一标准
-- [ ] 混响（reverb）：为转换后的人声添加混响，使其融入伴奏
-- [ ] EQ 均衡（可选）：处理人声与伴奏的频段冲突
-- [ ] CLI 入口：`python -m ai_song.mix --vocals converted.wav --instrumental instrumental.wav`
+- [x] 响度对齐：将 vocals 和伴奏的 LUFS 匹配到统一标准（pyloudnorm）
+- [x] 混响（reverb）：为转换后的人声添加混响，使其融入伴奏（pedalboard Reverb）
+- [x] 高通滤波：去除人声低频杂音（pedalboard HighpassFilter, 80Hz）
+- [x] 采样率自动重采样：RVC 输出 40kHz → 44.1kHz（scipy.signal.resample）
+- [x] 防削波处理：检测并自动归一化 peak > 1.0
+- [x] CLI 入口：`python -m ai_song.mix vocals.wav instrumental.wav`
+
+> **实测记录**：混音处理 4分17秒歌曲用时 1.8 秒，输出 -13.2 LUFS。
+> 人声 -16 LUFS + 伴奏 -18 LUFS，人声略突出，符合流行音乐混音习惯。
 
 ### 阶段五：质量评估 & 自动化
 
 - [ ] 快速预览机制：支持只处理一段（如副歌 30s）快速判断效果，避免整首歌处理完才发现不行
-- [ ] 完整 pipeline 串联：一条命令从 URL 到最终成品
-  - `python -m ai_song --url <bilibili_url> --model model.pth --transpose -2 --instrumental-shift 2`
+- [x] 完整 pipeline 串联：一条命令从 URL 到最终成品
+  - `python -m ai_song <bilibili_url> --model model.pth --transpose -2 --instrumental-shift 2`
 - [ ] 批量处理：支持多首歌、多个模型的组合批量生成
-- [ ] 输出目录指向 iCloud Drive，iPhone 自动同步试听：
+- [x] 输出目录指向 iCloud Drive，iPhone 自动同步试听：
   - 输出路径：`~/Library/Mobile Documents/com~apple~CloudDocs/ai_song_output/`
   - iPhone 打开"文件" app → iCloud 云盘 → ai_song_output 直接播放
 

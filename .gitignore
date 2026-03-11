@@ -212,6 +212,7 @@ __marimo__/
 # Audio files and pipeline output
 output/
 downloads/
+models/
 *.wav
 *.mp3
 *.flac
