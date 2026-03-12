@@ -29,6 +29,9 @@ class PipelineConfig:
         output_dir: Base output directory.
         icloud_copy: Copy final output to iCloud Drive.
         output_name: Optional custom name for the final output file.
+        enable_backing: Enable backing vocal separation and conversion.
+        auto_transpose: Analyze F0 and auto-recommend transpose values.
+        evaluate: Run quality evaluation after mixing.
     """
 
     model_path: Path = field(default_factory=lambda: Path("model.pth"))
@@ -41,6 +44,8 @@ class PipelineConfig:
     icloud_copy: bool = True
     output_name: str | None = None
     enable_backing: bool = True
+    auto_transpose: bool = False
+    evaluate: bool = False
 
 
 def _has_backing_vocals(path: Path, threshold_dbfs: float = -40.0) -> bool:
@@ -105,16 +110,43 @@ def run_pipeline(url: str, config: PipelineConfig) -> Path:
             )
             backing_vocals_path = None
 
+    transpose = config.transpose
+    instrumental_shift = config.instrumental_shift
+    if config.auto_transpose and transpose == 0:
+        from ai_song.transpose import analyze_f0, recommend_transpose
+
+        logger.info("=" * 60)
+        logger.info("STAGE 2.8: F0 Analysis & Transpose Recommendation")
+        logger.info("=" * 60)
+        f0_analysis = analyze_f0(lead_vocals_path, method=config.f0_method)
+        recommendation = recommend_transpose(f0_analysis)
+        logger.info(
+            "F0 median: %.1f Hz, range: %.1f semitones (P5-P95: %.1f-%.1f Hz)",
+            f0_analysis.median_hz,
+            f0_analysis.range_semitones,
+            f0_analysis.min_hz,
+            f0_analysis.max_hz,
+        )
+        logger.info(
+            "Recommendation: vocal=%+d, instrumental=%+d (confidence=%.2f)",
+            recommendation.vocal_transpose,
+            recommendation.instrumental_shift,
+            recommendation.confidence,
+        )
+        logger.info("Reason: %s", recommendation.reason)
+        transpose = recommendation.vocal_transpose
+        instrumental_shift = recommendation.instrumental_shift
+
     logger.info("=" * 60)
     logger.info("STAGE 3: Voice Conversion")
     logger.info("=" * 60)
     convert_config = ConvertConfig(
         model_path=config.model_path,
         index_path=config.index_path,
-        transpose=config.transpose,
+        transpose=transpose,
         f0_method=config.f0_method,
         index_rate=config.index_rate,
-        instrumental_shift=config.instrumental_shift,
+        instrumental_shift=instrumental_shift,
     )
     converted_path = config.output_dir / "converted" / f"{song_stem}_converted.wav"
     convert_vocals(lead_vocals_path, converted_path, convert_config)
@@ -149,6 +181,31 @@ def run_pipeline(url: str, config: PipelineConfig) -> Path:
         icloud_path = ICLOUD_OUTPUT / final_name
         shutil.copy2(mixed_path, icloud_path)
         logger.info("Copied to iCloud: %s", icloud_path)
+
+    if config.evaluate:
+        from ai_song.evaluate import evaluate_all
+
+        logger.info("=" * 60)
+        logger.info("STAGE 5: Quality Evaluation")
+        logger.info("=" * 60)
+        report = evaluate_all(
+            converted_path=converted_path,
+            reference_path=lead_vocals_path,
+            f0_method=config.f0_method,
+        )
+        logger.info(
+            "UTMOSv2: %.2f / 5.0 (%s)",
+            report.naturalness.utmos_score,
+            report.naturalness.quality_label,
+        )
+        if report.pitch is not None:
+            logger.info(
+                "Pitch accuracy: RPA=%.1f%%, RCA=%.1f%%, mean deviation=%.1f cents",
+                report.pitch.rpa * 100,
+                report.pitch.rca * 100,
+                report.pitch.mean_deviation_cents,
+            )
+        logger.info("Composite score: %.1f / 100", report.composite_score)
 
     elapsed = time.time() - pipeline_start
     logger.info("=" * 60)
@@ -218,6 +275,16 @@ def main() -> None:
         action="store_true",
         help="Skip backing vocal separation and conversion",
     )
+    parser.add_argument(
+        "--auto-transpose",
+        action="store_true",
+        help="Analyze F0 and auto-recommend transpose (ignored if --transpose is set)",
+    )
+    parser.add_argument(
+        "--evaluate",
+        action="store_true",
+        help="Run quality evaluation after mixing (UTMOSv2 + pitch accuracy)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -237,6 +304,8 @@ def main() -> None:
         icloud_copy=not args.no_icloud,
         output_name=args.name,
         enable_backing=not args.no_backing,
+        auto_transpose=args.auto_transpose,
+        evaluate=args.evaluate,
     )
 
     result = run_pipeline(args.url, config)

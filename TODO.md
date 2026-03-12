@@ -366,27 +366,42 @@
 > - 伴唱效果链区别于主唱：更轻的压缩/EQ，无 warmth/delay，更湿的 reverb（推远感）
 > - 三轨混音 LUFS：主唱 -17 / 伴唱 -22 / 伴奏 -18 → 混合 -13.2 LUFS
 
-### 阶段三：智能变调
+### 阶段三：智能变调 ✅ 已完成
 
 > 目标：让声音保持在模型甜区。支持全局变调和局部变调（只对高音段变调）。
 
-- [ ] F0 分析工具：分析源人声 F0 分布，标记超出模型甜区的段落
-- [ ] 全局变调：自动推荐最佳 transpose 值，使 F0 中位数落在模型甜区中心
-- [ ] 局部变调（Bounce-Back）：对超出甜区的段落单独 pitch shift → RVC transpose=0 → shift 回
-  - 需要先按 F0 分析结果切分音频段落
-  - 每段独立处理后拼接
-- [ ] 伴奏联动变调：全局变调时伴奏跟随 shift，局部变调时伴奏不变
-- [ ] CLI 支持：`--auto-transpose`（自动全局）和 `--smart-transpose`（局部）
+- [x] F0 分析工具：分析源人声 F0 分布，标记超出模型甜区的段落
+- [x] 全局变调：自动推荐最佳 transpose 值，使 F0 中位数落在模型甜区中心
+- [x] 局部变调（Bounce-Back）：对超出甜区的段落单独 pitch shift → RVC transpose=0 → shift 回
+- [x] 伴奏联动变调：全局变调时伴奏跟随 shift，局部变调时伴奏不变
+- [x] CLI 支持：`--auto-transpose`（自动全局），pipeline 集成
+- [x] 新增 `ai_song/transpose.py`：F0Analysis/TransposeRecommendation dataclass、analyze_f0()、recommend_transpose()、bounce_back_convert()
 
-### 阶段四：自动质量评估
+> **实测记录**：
+> - FCPE F0 提取在 16kHz 下 ~2s 完成（MPS 加速）
+> - 新歌分析：Median 300.8 Hz (D4)，P5-P95: 171-421 Hz，range 15.6 semitones
+> - 推荐变调 +1（confidence 0.14，即大部分已在甜区内，变调收益低）
+> - Bounce-Back 实现完整（segment 切分 + crossfade 拼接），未做端到端测试（当前歌曲不需要局部变调）
+
+### 阶段四：自动质量评估 ✅ 已完成
 
 > 用于批量模型/参数对比时自动打分排序，减少人工试听量。
 
-- [ ] 集成 F0 曲线对比：转换后 vs 原始，计算音准偏差（RPA/RCA），跑调是最致命问题
-- [ ] 集成 UTMOSv2：对合成感/金属感/爆音敏感，快速筛掉有问题的版本
+- [x] 集成 F0 曲线对比：转换后 vs 原始，计算音准偏差（RPA/RCA），跑调是最致命问题
+- [x] 集成 UTMOSv2：对合成感/金属感/爆音敏感，快速筛掉有问题的版本
 - [ ] 评估 SingMOS-Pro：专为歌声训练的 MOS 预测（2025 年末发布，确认是否有可用包）
-- [ ] 综合评分：加权组合多个指标，输出排序 + 分数报告
-- [ ] CLI 入口：`python -m ai_song.evaluate --input converted.wav --reference original.wav`
+- [x] 综合评分：加权组合多个指标，输出排序 + 分数报告
+- [x] CLI 入口：`python -m ai_song.evaluate --input converted.wav --reference original.wav`
+- [x] Pipeline 集成：`--evaluate` 参数在混音后自动运行评估
+- [x] macOS MPS/CPU 兼容：monkey-patch autocast + device fallback + num_workers=0
+
+> **实测记录**：
+> - 新增 `ai_song/evaluate.py`：PitchAccuracyResult/NaturalnessResult/EvaluationReport dataclass
+> - Pitch accuracy：RPA 79.5%，RCA 80.1%，mean deviation 53.7 cents，median 9.8 cents
+> - UTMOSv2：2.04/5.0（30s 转换片段）— UTMOSv2 是 TTS MOS 模型，对歌声分数偏低属正常
+> - Composite score：42.5/100（加权组合 UTMOS 40% + RPA 30% + 音准偏差 30%）
+> - UTMOSv2 在 macOS 上需要：patch autocast（CPU 无 CUDA）、num_workers=0（避免 pickle 错误）、device="cpu"
+> - 模型权重 781MB，首次运行自动下载到 `~/.cache/utmosv2/`
 
 ### 阶段五：换歌端到端验证
 
