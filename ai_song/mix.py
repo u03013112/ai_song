@@ -23,35 +23,100 @@ class MixError(Exception):
 class MixConfig:
     """Configuration for audio mixing.
 
+    All defaults tuned to "J version" — the best-performing vocal chain
+    from V1.2 A/B testing (pre-gain attenuation + gentle compression +
+    moderate EQ + low-drive saturation + limiter + spatial effects).
+
     Attributes:
-        vocal_lufs: Target loudness for vocals in LUFS (default: -16).
-            Typical pop vocals sit around -14 to -18 LUFS.
-        instrumental_lufs: Target loudness for instrumental in LUFS (default: -18).
-            Slightly quieter than vocals so voice sits on top.
-        vocal_reverb: Whether to add reverb to vocals (default: True).
-        reverb_room_size: Reverb room size 0.0-1.0 (default: 0.3).
-            0.1 = small room, 0.5 = hall, 0.9 = cathedral.
-        reverb_wet: Reverb wet/dry mix 0.0-1.0 (default: 0.15).
-            Lower values = subtler reverb. 0.1-0.2 is typical for pop.
-        reverb_damping: High-frequency damping 0.0-1.0 (default: 0.7).
-            Higher = warmer/darker reverb.
-        reverb_width: Stereo width 0.0-1.0 (default: 1.0).
-        vocal_gain_db: Additional vocal gain in dB after LUFS normalization
-            (default: 0.0). Use +1 to +3 to push vocals forward.
-        high_pass_freq: High-pass filter cutoff for vocals in Hz (default: 80).
-            Removes low-end rumble from vocal track.
-        sample_rate: Output sample rate in Hz (default: 44100).
+        vocal_lufs: Target loudness for vocals in LUFS.
+        instrumental_lufs: Target loudness for instrumental in LUFS.
+        backing_vocal_lufs: Target loudness for backing vocals in LUFS.
+        pre_gain_db: Pre-attenuation before effects chain to prevent
+            hot RVC output from overloading downstream processors.
+        high_pass_freq: High-pass filter cutoff for vocals in Hz.
+        vocal_compression: Whether to apply compression.
+        compressor_threshold_db: Compressor threshold in dB.
+        compressor_ratio: Compressor ratio (e.g. 2.5 means 2.5:1).
+        compressor_attack_ms: Compressor attack time in milliseconds.
+        compressor_release_ms: Compressor release time in milliseconds.
+        makeup_gain_db: Gain applied after compressor to compensate
+            for compression-induced level loss.
+        vocal_eq: Whether to apply body/presence/air EQ.
+        eq_body_gain_db: Low-shelf boost for body at 250 Hz.
+        eq_presence_gain_db: Peak boost for presence at 3 kHz.
+        eq_air_gain_db: High-shelf boost for air at 10 kHz.
+        vocal_warmth: Whether to apply warmth/saturation.
+        warmth_drive_db: Soft saturation drive amount. Keep ≤2 dB
+            to avoid high-note overload.
+        warmth_compensation_db: Gain reduction after distortion to
+            compensate for drive-induced level increase.
+        limiter_enabled: Whether to apply limiter after saturation.
+            Critical for preventing high-note distortion.
+        limiter_threshold_db: Limiter ceiling in dBFS.
+        limiter_release_ms: Limiter release time in milliseconds.
+        vocal_delay: Whether to apply subtle delay.
+        delay_seconds: Delay time in seconds.
+        delay_mix: Delay wet/dry mix.
+        delay_feedback: Delay feedback amount (0.0-1.0).
+        vocal_reverb: Whether to add reverb to vocals.
+        reverb_room_size: Reverb room size 0.0-1.0.
+        reverb_wet: Reverb wet/dry mix 0.0-1.0.
+        reverb_damping: High-frequency damping 0.0-1.0.
+        reverb_width: Stereo width 0.0-1.0.
+        vocal_gain_db: Additional vocal gain in dB after LUFS normalization.
+        sample_rate: Output sample rate in Hz.
     """
 
-    vocal_lufs: float = -16.0
+    # --- Loudness targets ---
+    vocal_lufs: float = -17.0
     instrumental_lufs: float = -18.0
-    vocal_reverb: bool = True
-    reverb_room_size: float = 0.3
-    reverb_wet: float = 0.15
-    reverb_damping: float = 0.7
-    reverb_width: float = 1.0
-    vocal_gain_db: float = 0.0
+    backing_vocal_lufs: float = -22.0
+
+    # --- Pre-gain ---
+    pre_gain_db: float = -3.0
+
+    # --- High-pass filter ---
     high_pass_freq: float = 80.0
+
+    # --- Compressor ---
+    vocal_compression: bool = True
+    compressor_threshold_db: float = -16.0
+    compressor_ratio: float = 2.5
+    compressor_attack_ms: float = 15.0
+    compressor_release_ms: float = 120.0
+    makeup_gain_db: float = 1.5
+
+    # --- EQ ---
+    vocal_eq: bool = True
+    eq_body_gain_db: float = 2.0
+    eq_presence_gain_db: float = 1.0
+    eq_air_gain_db: float = 2.0
+
+    # --- Warmth / Saturation ---
+    vocal_warmth: bool = True
+    warmth_drive_db: float = 1.5
+    warmth_compensation_db: float = -0.9
+
+    # --- Limiter ---
+    limiter_enabled: bool = True
+    limiter_threshold_db: float = -3.0
+    limiter_release_ms: float = 50.0
+
+    # --- Delay ---
+    vocal_delay: bool = True
+    delay_seconds: float = 0.08
+    delay_mix: float = 0.08
+    delay_feedback: float = 0.15
+
+    # --- Reverb ---
+    vocal_reverb: bool = True
+    reverb_room_size: float = 0.45
+    reverb_wet: float = 0.22
+    reverb_damping: float = 0.6
+    reverb_width: float = 1.0
+
+    # --- Post-mix ---
+    vocal_gain_db: float = 0.0
     sample_rate: int = 44100
 
 
@@ -116,7 +181,7 @@ def _normalize_lufs(
 def _apply_vocal_effects(
     audio: np.ndarray, sample_rate: int, config: MixConfig
 ) -> np.ndarray:
-    """Apply reverb and EQ effects to vocals.
+    """Apply vocal chain: PreGain → HPF → Compressor → EQ → Warmth → Limiter → Delay → Reverb.
 
     Args:
         audio: Vocal audio data.
@@ -127,19 +192,103 @@ def _apply_vocal_effects(
         Processed vocal audio.
     """
     from pedalboard import (
+        Compressor,
+        Delay,
+        Distortion,
+        Gain,
+        HighShelfFilter,
         HighpassFilter,
+        Limiter,
+        LowShelfFilter,
+        PeakFilter,
         Pedalboard,
         Reverb,
     )
 
-    effects: list[HighpassFilter | Reverb] = []
+    effects: list = []
 
-    # High-pass filter to remove low-end rumble
+    if config.pre_gain_db != 0.0:
+        effects.append(Gain(gain_db=config.pre_gain_db))
+        logger.info("Pre-gain: %+.1f dB", config.pre_gain_db)
+
     if config.high_pass_freq > 0:
         effects.append(HighpassFilter(cutoff_frequency_hz=config.high_pass_freq))
-        logger.info("Applying high-pass filter: %.0f Hz", config.high_pass_freq)
+        logger.info("HPF: %.0f Hz", config.high_pass_freq)
 
-    # Reverb to help vocals sit in the mix
+    if config.vocal_compression:
+        effects.append(
+            Compressor(
+                threshold_db=config.compressor_threshold_db,
+                ratio=config.compressor_ratio,
+                attack_ms=config.compressor_attack_ms,
+                release_ms=config.compressor_release_ms,
+            )
+        )
+        effects.append(Gain(gain_db=config.makeup_gain_db))
+        logger.info(
+            "Compressor: threshold=%.0fdB, ratio=%.1f, attack=%.0fms, "
+            "release=%.0fms + %.1fdB makeup",
+            config.compressor_threshold_db,
+            config.compressor_ratio,
+            config.compressor_attack_ms,
+            config.compressor_release_ms,
+            config.makeup_gain_db,
+        )
+
+    if config.vocal_eq:
+        effects.append(LowShelfFilter(
+            cutoff_frequency_hz=250.0, gain_db=config.eq_body_gain_db
+        ))
+        effects.append(PeakFilter(
+            cutoff_frequency_hz=3000.0, gain_db=config.eq_presence_gain_db, q=1.0
+        ))
+        effects.append(HighShelfFilter(
+            cutoff_frequency_hz=10000.0, gain_db=config.eq_air_gain_db
+        ))
+        logger.info(
+            "EQ: body=+%.1fdB@250Hz, presence=+%.1fdB@3kHz, air=+%.1fdB@10kHz",
+            config.eq_body_gain_db,
+            config.eq_presence_gain_db,
+            config.eq_air_gain_db,
+        )
+
+    if config.vocal_warmth:
+        effects.append(Distortion(drive_db=config.warmth_drive_db))
+        effects.append(Gain(gain_db=config.warmth_compensation_db))
+        logger.info(
+            "Warmth: drive=%.1fdB, compensation=%+.1fdB",
+            config.warmth_drive_db,
+            config.warmth_compensation_db,
+        )
+
+    if config.limiter_enabled:
+        effects.append(
+            Limiter(
+                threshold_db=config.limiter_threshold_db,
+                release_ms=config.limiter_release_ms,
+            )
+        )
+        logger.info(
+            "Limiter: threshold=%.1fdB, release=%.0fms",
+            config.limiter_threshold_db,
+            config.limiter_release_ms,
+        )
+
+    if config.vocal_delay:
+        effects.append(
+            Delay(
+                delay_seconds=config.delay_seconds,
+                mix=config.delay_mix,
+                feedback=config.delay_feedback,
+            )
+        )
+        logger.info(
+            "Delay: %.0fms, mix=%.0f%%, feedback=%.0f%%",
+            config.delay_seconds * 1000,
+            config.delay_mix * 100,
+            config.delay_feedback * 100,
+        )
+
     if config.vocal_reverb:
         effects.append(
             Reverb(
@@ -150,7 +299,7 @@ def _apply_vocal_effects(
             )
         )
         logger.info(
-            "Applying reverb: room=%.2f, wet=%.2f, damping=%.2f",
+            "Reverb: room=%.2f, wet=%.2f, damping=%.2f",
             config.reverb_room_size,
             config.reverb_wet,
             config.reverb_damping,
@@ -161,7 +310,6 @@ def _apply_vocal_effects(
 
     board = Pedalboard(effects)
 
-    # pedalboard expects (channels, samples)
     if audio.ndim == 1:
         audio_2d = audio[np.newaxis, :]
     else:
@@ -169,7 +317,6 @@ def _apply_vocal_effects(
 
     processed = board(audio_2d, sample_rate)
 
-    # Convert back to (samples,) or (samples, channels)
     if audio.ndim == 1:
         return processed.squeeze()
     return processed.T
@@ -299,20 +446,12 @@ def mix_tracks(
 
         sample_rate = i_sr
         if v_sr != sample_rate:
-            import scipy.signal
+            import soxr
 
             logger.info(
-                "Resampling vocals: %d Hz -> %d Hz", v_sr, sample_rate
+                "Resampling vocals: %d Hz -> %d Hz (SoXR VHQ)", v_sr, sample_rate
             )
-            num_samples = int(len(vocals) * sample_rate / v_sr)
-            if vocals.ndim == 1:
-                vocals = scipy.signal.resample(vocals, num_samples).astype(
-                    np.float32
-                )
-            else:
-                vocals = scipy.signal.resample(vocals, num_samples, axis=0).astype(
-                    np.float32
-                )
+            vocals = soxr.resample(vocals, v_sr, sample_rate, quality="VHQ")
 
         logger.info("Applying vocal effects...")
         vocals = _apply_vocal_effects(vocals, sample_rate, config)

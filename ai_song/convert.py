@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+import os
+
+# PyTorch and faiss-cpu each bundle their own libomp.dylib on macOS.
+# Loading both triggers OMP Error #15 → SIGABRT during faiss.index.search().
+os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+
 import logging
 import time
 from dataclasses import dataclass, field
@@ -32,6 +38,36 @@ def _patch_torch_load() -> None:
         return _original_load(*args, **kwargs)
 
     torch.load = _patched_load
+
+
+def _patch_rvc_device(device: str) -> None:
+    """Patch rvc-python Config to respect our device choice.
+
+    rvc-python's Config class is a singleton that auto-detects MPS on macOS
+    and overrides any device parameter. MPS causes Metal crashes on long
+    audio (>5 min) during rmvpe stft. This patch forces the Config to use
+    our specified device by disabling MPS detection when device is 'cpu'.
+    """
+    if device == "mps":
+        return  # Let rvc-python use MPS naturally
+
+    from unittest.mock import patch
+
+    # Patch has_mps to return False so Config falls through to CPU
+    import rvc_python.configs.config as rvc_config
+
+    original_has_mps = rvc_config.Config.has_mps
+
+    @staticmethod  # type: ignore[misc]
+    def _no_mps() -> bool:
+        return False
+
+    rvc_config.Config.has_mps = _no_mps
+
+    # Reset the singleton so Config can be re-created with correct device
+    rvc_config.Config.instance = None  # type: ignore[attr-defined]
+
+    logger.info("Patched rvc-python Config: MPS detection disabled, using %s", device)
 
 
 _patch_torch_load()
@@ -128,6 +164,7 @@ def convert_vocals(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
+        _patch_rvc_device(config.device)
         from rvc_python.infer import RVCInference
 
         logger.info("Loading RVC model: %s (device=%s)", model_path.name, config.device)
