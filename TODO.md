@@ -403,23 +403,38 @@
 > - UTMOSv2 在 macOS 上需要：patch autocast（CPU 无 CUDA）、num_workers=0（避免 pickle 错误）、device="cpu"
 > - 模型权重 781MB，首次运行自动下载到 `~/.cache/utmosv2/`
 
-### 阶段五：换歌端到端验证
+### 阶段五：换歌端到端验证 ✅ 已完成
 
 > 用新歌跑完整 pipeline，验证所有升级的泛化性。
 
 - [x] 选一首新歌（用户提供 URL）：`https://www.bilibili.com/video/BV1rs4y1R7Xf/`
 - [x] 先按 V1.2 基线产出对比样本（下载 → 分离 → karaoke 分离 → Hayley 主唱转换 → 三轨混音）
 - [x] 输出到 iCloud Drive 试听：`ai_song_output/v1.2_new/v1.2_newsong_hayley_三轨混音.wav`
-- [ ] 完整 pipeline：下载 → 分离 → 主唱转换 → 伴唱转换 → 智能变调 → 混音 → 质量评估
-- [ ] 与 V1.2 效果对比，确认升级效果
+- [x] F0 分析 + auto-transpose：推荐 +1（confidence 0.14，大部分已在甜区内）
+- [x] 用 transpose=+1 重新转换主唱 + 伴唱 + 三轨混音
+- [x] 质量评估对比（transpose=0 vs transpose=+1）
+- [x] 修复 evaluate 的 transpose 补偿 bug（ref_f0 被重复赋值覆盖）
+- [x] 与 V1.2 效果对比，确认升级效果
 
-> **V1.2 新歌对比样本（2026-03-12）**
-> - 下载源：BV1rs4y1R7Xf（`v1.2_newsong_source.wav`）
-> - 转换参数：FCPE + protect=0.33 + index_rate=0.0 + transpose=0
-> - 混音参数：J 版本效果链（MixConfig 默认）
-> - 三轨：转换后主唱 + 原伴唱 + 伴奏
-> - 最终文件：`output/v1.2_new/v1.2_newsong_hayley_三轨混音.wav`
-> - iCloud：`~/Library/Mobile Documents/com~apple~CloudDocs/ai_song_output/v1.2_new/v1.2_newsong_hayley_三轨混音.wav`
+> **V1.3 端到端验证结果（2026-03-12）**
+>
+> | 指标 | transpose=0 | transpose=+1 (auto) | 变化 |
+> |------|------------|---------------------|------|
+> | UTMOSv2 | 1.49 / 5.0 | **2.29 / 5.0** | **+0.80 ↑** |
+> | Pitch RPA | 76.6% | 76.6% | 持平 |
+> | Mean deviation | 73.8 cents | **71.9 cents** | **-1.9c ↑** |
+> | Composite | 35.8 / 100 | **44.4 / 100** | **+8.6 ↑** |
+>
+> **结论**：auto-transpose +1 使 UTMOSv2 自然度提升 0.80 分，综合分数提升 8.6 分。Pitch accuracy 保持不变，说明变调没有引入音准问题。
+>
+> **输出文件**：
+> - `output/v1.2_new/v1.3_newsong_hayley_full_pipeline.wav`（三轨混音，transpose=+1）
+> - iCloud: `ai_song_output/v1.3_test/v1.3_newsong_hayley_full_pipeline.wav`
+>
+> **V1.3 完整 pipeline 命令**（端到端）：
+> ```bash
+> python -m ai_song <url> --model models/hayley_williams/model.pth --auto-transpose --evaluate
+> ```
 
 ---
 
