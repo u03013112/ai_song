@@ -65,6 +65,22 @@ class MixConfig:
         reverb_width: Stereo width 0.0-1.0.
         vocal_gain_db: Additional vocal gain in dB after LUFS normalization.
         sample_rate: Output sample rate in Hz.
+        backing_compression: Whether to apply backing vocal compression.
+        backing_compressor_threshold_db: Backing compressor threshold in dB.
+        backing_compressor_ratio: Backing compressor ratio.
+        backing_compressor_attack_ms: Backing compressor attack in milliseconds.
+        backing_compressor_release_ms: Backing compressor release in milliseconds.
+        backing_makeup_gain_db: Backing post-compression makeup gain in dB.
+        backing_eq: Whether to apply backing vocal EQ.
+        backing_eq_body_gain_db: Backing low-shelf gain at 250 Hz.
+        backing_eq_presence_gain_db: Backing peak gain at 3 kHz.
+        backing_eq_air_gain_db: Backing high-shelf gain at 10 kHz.
+        backing_reverb: Whether to apply backing vocal reverb.
+        backing_reverb_room_size: Backing reverb room size 0.0-1.0.
+        backing_reverb_wet: Backing reverb wet/dry mix 0.0-1.0.
+        backing_reverb_damping: Backing reverb damping 0.0-1.0.
+        backing_reverb_width: Backing reverb stereo width 0.0-1.0.
+        backing_limiter_threshold_db: Backing limiter ceiling in dBFS.
     """
 
     # --- Loudness targets ---
@@ -118,6 +134,24 @@ class MixConfig:
     # --- Post-mix ---
     vocal_gain_db: float = 0.0
     sample_rate: int = 44100
+
+    # --- Backing vocal effects ---
+    backing_compression: bool = True
+    backing_compressor_threshold_db: float = -20.0
+    backing_compressor_ratio: float = 2.0
+    backing_compressor_attack_ms: float = 20.0
+    backing_compressor_release_ms: float = 150.0
+    backing_makeup_gain_db: float = 1.0
+    backing_eq: bool = True
+    backing_eq_body_gain_db: float = 1.0
+    backing_eq_presence_gain_db: float = 0.5
+    backing_eq_air_gain_db: float = 1.0
+    backing_reverb: bool = True
+    backing_reverb_room_size: float = 0.65
+    backing_reverb_wet: float = 0.35
+    backing_reverb_damping: float = 0.55
+    backing_reverb_width: float = 1.0
+    backing_limiter_threshold_db: float = -6.0
 
 
 def _measure_lufs(audio: np.ndarray, sample_rate: int) -> float:
@@ -322,6 +356,110 @@ def _apply_vocal_effects(
     return processed.T
 
 
+def _apply_backing_vocal_effects(
+    audio: np.ndarray, sample_rate: int, config: MixConfig
+) -> np.ndarray:
+    """Apply backing vocal chain: HPF → Compressor → EQ → Limiter → Reverb."""
+    from pedalboard import (
+        Compressor,
+        Gain,
+        HighShelfFilter,
+        HighpassFilter,
+        Limiter,
+        LowShelfFilter,
+        PeakFilter,
+        Pedalboard,
+        Reverb,
+    )
+
+    effects: list = []
+
+    if config.high_pass_freq > 0:
+        effects.append(HighpassFilter(cutoff_frequency_hz=config.high_pass_freq))
+        logger.info("Backing HPF: %.0f Hz", config.high_pass_freq)
+
+    if config.backing_compression:
+        effects.append(
+            Compressor(
+                threshold_db=config.backing_compressor_threshold_db,
+                ratio=config.backing_compressor_ratio,
+                attack_ms=config.backing_compressor_attack_ms,
+                release_ms=config.backing_compressor_release_ms,
+            )
+        )
+        effects.append(Gain(gain_db=config.backing_makeup_gain_db))
+        logger.info(
+            "Backing compressor: threshold=%.0fdB, ratio=%.1f, attack=%.0fms, "
+            "release=%.0fms + %.1fdB makeup",
+            config.backing_compressor_threshold_db,
+            config.backing_compressor_ratio,
+            config.backing_compressor_attack_ms,
+            config.backing_compressor_release_ms,
+            config.backing_makeup_gain_db,
+        )
+
+    if config.backing_eq:
+        effects.append(LowShelfFilter(
+            cutoff_frequency_hz=250.0, gain_db=config.backing_eq_body_gain_db
+        ))
+        effects.append(PeakFilter(
+            cutoff_frequency_hz=3000.0,
+            gain_db=config.backing_eq_presence_gain_db,
+            q=1.0,
+        ))
+        effects.append(HighShelfFilter(
+            cutoff_frequency_hz=10000.0, gain_db=config.backing_eq_air_gain_db
+        ))
+        logger.info(
+            "Backing EQ: body=+%.1fdB@250Hz, presence=+%.1fdB@3kHz, "
+            "air=+%.1fdB@10kHz",
+            config.backing_eq_body_gain_db,
+            config.backing_eq_presence_gain_db,
+            config.backing_eq_air_gain_db,
+        )
+
+    effects.append(
+        Limiter(
+            threshold_db=config.backing_limiter_threshold_db,
+            release_ms=config.limiter_release_ms,
+        )
+    )
+    logger.info(
+        "Backing limiter: threshold=%.1fdB, release=%.0fms",
+        config.backing_limiter_threshold_db,
+        config.limiter_release_ms,
+    )
+
+    if config.backing_reverb:
+        effects.append(
+            Reverb(
+                room_size=config.backing_reverb_room_size,
+                wet_level=config.backing_reverb_wet,
+                damping=config.backing_reverb_damping,
+                width=config.backing_reverb_width,
+            )
+        )
+        logger.info(
+            "Backing reverb: room=%.2f, wet=%.2f, damping=%.2f",
+            config.backing_reverb_room_size,
+            config.backing_reverb_wet,
+            config.backing_reverb_damping,
+        )
+
+    board = Pedalboard(effects)
+
+    if audio.ndim == 1:
+        audio_2d = audio[np.newaxis, :]
+    else:
+        audio_2d = audio.T
+
+    processed = board(audio_2d, sample_rate)
+
+    if audio.ndim == 1:
+        return processed.squeeze()
+    return processed.T
+
+
 def _apply_gain_db(audio: np.ndarray, gain_db: float) -> np.ndarray:
     """Apply gain in dB to audio.
 
@@ -394,6 +532,7 @@ def mix_tracks(
     vocals_path: Path,
     instrumental_path: Path,
     output_path: Path,
+    backing_vocals_path: Path | None = None,
     config: MixConfig | None = None,
 ) -> Path:
     """Mix converted vocals with instrumental track.
@@ -411,6 +550,7 @@ def mix_tracks(
         vocals_path: Path to converted vocal audio (WAV).
         instrumental_path: Path to instrumental audio (WAV).
         output_path: Path to save mixed output.
+        backing_vocals_path: Optional path to converted backing vocal audio (WAV).
         config: Mix configuration. Uses defaults if None.
 
     Returns:
@@ -435,6 +575,11 @@ def mix_tracks(
         # Load audio
         vocals, v_sr = sf.read(str(vocals_path), dtype="float32")
         instrumental, i_sr = sf.read(str(instrumental_path), dtype="float32")
+        backing_vocals = None
+        b_sr = i_sr
+
+        if backing_vocals_path is not None and backing_vocals_path.exists():
+            backing_vocals, b_sr = sf.read(str(backing_vocals_path), dtype="float32")
 
         logger.info(
             "Loaded vocals: %.1fs @ %d Hz, instrumental: %.1fs @ %d Hz",
@@ -453,13 +598,41 @@ def mix_tracks(
             )
             vocals = soxr.resample(vocals, v_sr, sample_rate, quality="VHQ")
 
+        if backing_vocals is not None and b_sr != sample_rate:
+            import soxr
+
+            logger.info(
+                "Resampling backing vocals: %d Hz -> %d Hz (SoXR VHQ)",
+                b_sr,
+                sample_rate,
+            )
+            backing_vocals = soxr.resample(
+                backing_vocals,
+                b_sr,
+                sample_rate,
+                quality="VHQ",
+            )
+
         logger.info("Applying vocal effects...")
         vocals = _apply_vocal_effects(vocals, sample_rate, config)
+        if backing_vocals is not None:
+            logger.info("Applying backing vocal effects...")
+            backing_vocals = _apply_backing_vocal_effects(
+                backing_vocals,
+                sample_rate,
+                config,
+            )
 
         # Step 2: LUFS normalization
         logger.info("Normalizing loudness...")
         vocals = _normalize_lufs(vocals, sample_rate, config.vocal_lufs)
         instrumental = _normalize_lufs(instrumental, sample_rate, config.instrumental_lufs)
+        if backing_vocals is not None:
+            backing_vocals = _normalize_lufs(
+                backing_vocals,
+                sample_rate,
+                config.backing_vocal_lufs,
+            )
 
         # Step 3: Optional vocal gain boost
         if config.vocal_gain_db != 0.0:
@@ -468,9 +641,14 @@ def mix_tracks(
 
         # Step 4: Match dimensions
         vocals, instrumental = _match_length_and_channels(vocals, instrumental)
+        if backing_vocals is not None:
+            backing_vocals, vocals = _match_length_and_channels(backing_vocals, vocals)
+            instrumental, vocals = _match_length_and_channels(instrumental, vocals)
 
         # Step 5: Mix (sum) and clip
         mixed = vocals + instrumental
+        if backing_vocals is not None:
+            mixed = mixed + backing_vocals
         peak = np.abs(mixed).max()
         if peak > 1.0:
             logger.warning(
@@ -578,7 +756,12 @@ def main() -> None:
         stem = args.vocals.stem.replace("_converted", "").replace("_vocals", "")
         output_path = DEFAULT_OUTPUT_DIR / f"{stem}_mixed.wav"
 
-    result = mix_tracks(args.vocals, args.instrumental, output_path, config)
+    result = mix_tracks(
+        args.vocals,
+        args.instrumental,
+        output_path,
+        config=config,
+    )
     print(f"Mixed: {result}")
 
 

@@ -141,13 +141,18 @@ def convert_vocals(
 
         vc = _ensure_vc()
 
+        # Resolve all paths BEFORE chdir to Applio directory
+        resolved_input = str(input_path.resolve())
+        resolved_output = str(output_path.resolve())
+        resolved_model = str(model_path.resolve())
+
         original_dir = os.getcwd()
         os.chdir(str(APPLIO_DIR))
         try:
             vc.convert_audio(
-                audio_input_path=str(input_path.resolve()),
-                audio_output_path=str(output_path.resolve()),
-                model_path=str(model_path.resolve()),
+                audio_input_path=resolved_input,
+                audio_output_path=resolved_output,
+                model_path=resolved_model,
                 index_path=index_str,
                 pitch=config.transpose,
                 f0_method=config.f0_method,

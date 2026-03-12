@@ -8,6 +8,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
 ICLOUD_OUTPUT = Path.home() / "Library/Mobile Documents/com~apple~CloudDocs/ai_song_output"
@@ -38,6 +40,17 @@ class PipelineConfig:
     output_dir: Path = field(default_factory=lambda: Path("output"))
     icloud_copy: bool = True
     output_name: str | None = None
+    enable_backing: bool = True
+
+
+def _has_backing_vocals(path: Path, threshold_dbfs: float = -40.0) -> bool:
+    """Check if backing vocals file has significant audio content."""
+    import soundfile as sf
+
+    audio, _ = sf.read(str(path), dtype="float32")
+    rms = np.sqrt(np.mean(audio ** 2))
+    dbfs = 20 * np.log10(rms + 1e-10)
+    return dbfs > threshold_dbfs
 
 
 def run_pipeline(url: str, config: PipelineConfig) -> Path:
@@ -53,7 +66,7 @@ def run_pipeline(url: str, config: PipelineConfig) -> Path:
     from ai_song.convert import ConvertConfig, convert_vocals
     from ai_song.download import download_audio
     from ai_song.mix import MixConfig, mix_tracks
-    from ai_song.separate import separate_vocals
+    from ai_song.separate import separate_karaoke, separate_vocals
 
     pipeline_start = time.time()
 
@@ -73,6 +86,25 @@ def run_pipeline(url: str, config: PipelineConfig) -> Path:
     logger.info("Vocals: %s", vocals_path)
     logger.info("Instrumental: %s", instrumental_path)
 
+    lead_vocals_path = vocals_path
+    backing_vocals_path: Path | None = None
+    if config.enable_backing:
+        logger.info("=" * 60)
+        logger.info("STAGE 2.5: Karaoke Separation")
+        logger.info("=" * 60)
+        lead_vocals_path, backing_vocals_path = separate_karaoke(
+            vocals_path,
+            config.output_dir / "separated_karaoke",
+        )
+        logger.info("Lead vocals: %s", lead_vocals_path)
+        logger.info("Backing vocals: %s", backing_vocals_path)
+        if not _has_backing_vocals(backing_vocals_path):
+            logger.info(
+                "Backing vocals below threshold, skipping backing conversion: %s",
+                backing_vocals_path,
+            )
+            backing_vocals_path = None
+
     logger.info("=" * 60)
     logger.info("STAGE 3: Voice Conversion")
     logger.info("=" * 60)
@@ -85,8 +117,16 @@ def run_pipeline(url: str, config: PipelineConfig) -> Path:
         instrumental_shift=config.instrumental_shift,
     )
     converted_path = config.output_dir / "converted" / f"{song_stem}_converted.wav"
-    convert_vocals(vocals_path, converted_path, convert_config)
+    convert_vocals(lead_vocals_path, converted_path, convert_config)
     logger.info("Converted: %s", converted_path)
+
+    converted_backing_path: Path | None = None
+    if backing_vocals_path is not None:
+        converted_backing_path = (
+            config.output_dir / "converted" / f"{song_stem}_backing_converted.wav"
+        )
+        convert_vocals(backing_vocals_path, converted_backing_path, convert_config)
+        logger.info("Converted backing: %s", converted_backing_path)
 
     logger.info("=" * 60)
     logger.info("STAGE 4: Mixing")
@@ -95,7 +135,13 @@ def run_pipeline(url: str, config: PipelineConfig) -> Path:
     if not final_name.endswith(".wav"):
         final_name += ".wav"
     mixed_path = config.output_dir / "mixed" / final_name
-    mix_tracks(converted_path, instrumental_path, mixed_path, MixConfig())
+    mix_tracks(
+        converted_path,
+        instrumental_path,
+        mixed_path,
+        backing_vocals_path=converted_backing_path,
+        config=MixConfig(),
+    )
     logger.info("Mixed: %s", mixed_path)
 
     if config.icloud_copy:
@@ -167,6 +213,11 @@ def main() -> None:
         action="store_true",
         help="Do not copy output to iCloud Drive",
     )
+    parser.add_argument(
+        "--no-backing",
+        action="store_true",
+        help="Skip backing vocal separation and conversion",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -185,6 +236,7 @@ def main() -> None:
         output_dir=args.output_dir,
         icloud_copy=not args.no_icloud,
         output_name=args.name,
+        enable_backing=not args.no_backing,
     )
 
     result = run_pipeline(args.url, config)

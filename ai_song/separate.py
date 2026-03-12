@@ -8,6 +8,7 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "model_bs_roformer_ep_368_sdr_12.9628.ckpt"
+KARAOKE_MODEL = "mel_band_roformer_karaoke_aufr33_viperx_sdr_10.1956.ckpt"
 DEFAULT_OUTPUT_DIR = Path("output/separated")
 
 
@@ -79,6 +80,72 @@ def separate_vocals(
         ) from e
     except Exception as e:
         raise SeparationError(f"Separation failed: {e}") from e
+
+
+def separate_karaoke(
+    vocals_path: Path,
+    output_dir: Path,
+    model_name: str = KARAOKE_MODEL,
+) -> tuple[Path, Path]:
+    """Separate vocals into lead and backing vocals.
+
+    Args:
+        vocals_path: Path to the input vocal audio file (WAV format).
+        output_dir: Directory to write separated karaoke stems.
+        model_name: Karaoke model filename for audio-separator.
+
+    Returns:
+        Tuple of (lead_vocals_path, backing_vocals_path).
+
+    Raises:
+        SeparationError: If karaoke separation fails.
+    """
+    if not vocals_path.exists():
+        raise SeparationError(f"Input file not found: {vocals_path}")
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from audio_separator.separator import Separator
+
+        separator = Separator(
+            output_dir=str(output_dir),
+            output_format="WAV",
+        )
+        separator.load_model(model_filename=model_name)
+        output_files = separator.separate(str(vocals_path))
+
+        logger.info("Karaoke separation complete: %s", output_files)
+
+        if len(output_files) < 2:
+            raise SeparationError(
+                f"Expected 2 output files, got {len(output_files)}: {output_files}"
+            )
+
+        lead_vocals_path = None
+        backing_vocals_path = None
+        for f in output_files:
+            fp = output_dir / Path(f).name
+            name_lower = fp.name.lower()
+            # Karaoke model labels: (Vocals) = lead, (Instrumental) = backing
+            if "instrument" in name_lower or "back" in name_lower:
+                backing_vocals_path = fp
+            elif "vocal" in name_lower or "lead" in name_lower:
+                lead_vocals_path = fp
+
+        if lead_vocals_path is None:
+            lead_vocals_path = output_dir / Path(output_files[0]).name
+        if backing_vocals_path is None:
+            backing_vocals_path = output_dir / Path(output_files[1]).name
+
+        return lead_vocals_path, backing_vocals_path
+
+    except ImportError as e:
+        raise SeparationError(
+            "audio-separator not installed. Run: pip install audio-separator"
+        ) from e
+    except Exception as e:
+        raise SeparationError(f"Karaoke separation failed: {e}") from e
 
 
 def main() -> None:
