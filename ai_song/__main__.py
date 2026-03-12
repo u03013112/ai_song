@@ -192,6 +192,7 @@ def run_pipeline(url: str, config: PipelineConfig) -> Path:
             converted_path=converted_path,
             reference_path=lead_vocals_path,
             f0_method=config.f0_method,
+            transpose=transpose,
         )
         logger.info(
             "UTMOSv2: %.2f / 5.0 (%s)",

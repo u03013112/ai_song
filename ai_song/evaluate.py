@@ -136,6 +136,7 @@ def evaluate_pitch_accuracy(
     reference_path: Path,
     converted_path: Path,
     f0_method: str = "fcpe",
+    transpose: int = 0,
 ) -> PitchAccuracyResult:
     """Evaluate F0 pitch accuracy between reference and converted singing."""
     try:
@@ -147,6 +148,12 @@ def evaluate_pitch_accuracy(
 
         ref_f0 = ref_analysis.f0_hz.astype(np.float64, copy=False)
         est_f0 = est_analysis.f0_hz.astype(np.float64, copy=False)
+
+        if transpose != 0:
+            shift_ratio = 2.0 ** (transpose / 12.0)
+            voiced_mask = ref_f0 > 0.0
+            ref_f0 = ref_f0.copy()
+            ref_f0[voiced_mask] *= shift_ratio
 
         if len(ref_f0) == 0 or len(est_f0) == 0:
             raise EvaluationError("Empty F0 curve")
@@ -231,6 +238,7 @@ def evaluate_all(
     converted_path: Path,
     reference_path: Path | None = None,
     f0_method: str = "fcpe",
+    transpose: int = 0,
 ) -> EvaluationReport:
     """Run full evaluation and compute a weighted composite score."""
     naturalness = evaluate_utmos(converted_path)
@@ -245,6 +253,7 @@ def evaluate_all(
             reference_path,
             converted_path,
             f0_method=f0_method,
+            transpose=transpose,
         )
         rpa_score = pitch.rpa * 100.0
         mean_deviation_normalized = min(pitch.mean_deviation_cents / 100.0, 1.0)
@@ -285,6 +294,12 @@ def main() -> None:
         choices=["fcpe", "crepe"],
         help="F0 extraction method (default: fcpe)",
     )
+    parser.add_argument(
+        "--transpose",
+        type=int,
+        default=0,
+        help="Transpose applied during conversion (compensates pitch comparison)",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
@@ -293,6 +308,7 @@ def main() -> None:
         converted_path=args.input,
         reference_path=args.reference,
         f0_method=args.f0_method,
+        transpose=args.transpose,
     )
 
     print("=== Quality Evaluation ===")
