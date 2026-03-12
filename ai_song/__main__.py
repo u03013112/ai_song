@@ -22,9 +22,8 @@ class PipelineConfig:
         index_path: Optional path to the feature index (.index).
         transpose: Vocal pitch shift in semitones.
         instrumental_shift: Instrumental pitch shift in semitones.
-        f0_method: Pitch extraction method (rmvpe, harvest, crepe).
+        f0_method: Pitch extraction method (fcpe, rmvpe, crepe).
         index_rate: Feature retrieval ratio 0.0-1.0 (0 disables faiss).
-        device: Inference device (mps, cpu, cuda).
         output_dir: Base output directory.
         icloud_copy: Copy final output to iCloud Drive.
         output_name: Optional custom name for the final output file.
@@ -34,9 +33,8 @@ class PipelineConfig:
     index_path: Path | None = None
     transpose: int = 0
     instrumental_shift: int = 0
-    f0_method: str = "rmvpe"
+    f0_method: str = "fcpe"
     index_rate: float = 0.0
-    device: str = "mps"
     output_dir: Path = field(default_factory=lambda: Path("output"))
     icloud_copy: bool = True
     output_name: str | None = None
@@ -85,7 +83,6 @@ def run_pipeline(url: str, config: PipelineConfig) -> Path:
         f0_method=config.f0_method,
         index_rate=config.index_rate,
         instrumental_shift=config.instrumental_shift,
-        device=config.device,
     )
     converted_path = config.output_dir / "converted" / f"{song_stem}_converted.wav"
     convert_vocals(vocals_path, converted_path, convert_config)
@@ -144,20 +141,15 @@ def main() -> None:
     )
     parser.add_argument(
         "--f0-method",
-        choices=["rmvpe", "harvest", "crepe"],
-        default="rmvpe",
-        help="Pitch extraction method (default: rmvpe)",
+        choices=["fcpe", "rmvpe", "crepe"],
+        default="fcpe",
+        help="Pitch extraction method (default: fcpe)",
     )
     parser.add_argument(
         "--index-rate",
         type=float,
         default=0.0,
         help="Feature retrieval ratio 0.0-1.0, 0 disables faiss (default: 0)",
-    )
-    parser.add_argument(
-        "--device",
-        default="mps",
-        help="Inference device: mps, cpu, cuda (default: mps)",
     )
     parser.add_argument(
         "--output-dir",
@@ -190,7 +182,6 @@ def main() -> None:
         instrumental_shift=args.instrumental_shift,
         f0_method=args.f0_method,
         index_rate=args.index_rate,
-        device=args.device,
         output_dir=args.output_dir,
         icloud_copy=not args.no_icloud,
         output_name=args.name,

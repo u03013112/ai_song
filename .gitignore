@@ -216,3 +216,6 @@ models/
 *.wav
 *.mp3
 *.flac
+
+# Third-party cloned repos (large, not part of our source)
+third_party/

@@ -313,6 +313,88 @@
 
 ---
 
+## V1.3：引擎升级 & 智能变调 & 质量评估 🔄 进行中
+
+> 目标：升级语音转换引擎（rvc-python → Applio），支持伴唱转换、智能变调、自动质量评估，换新歌端到端验证。
+
+### 阶段一：语音转换引擎升级 ✅ 已完成
+
+> 调研了 GPT-SoVITS、DDSP-SVC、Applio 三个候选。GPT-SoVITS 是 TTS 引擎（不支持 audio→audio SVC），DDSP-SVC 无社区模型生态（需自行训练）。最终选定 **Applio**（IAHispano/Applio，3k⭐，活跃 RVC fork），完全兼容现有 21 个 RVC 模型。
+
+- [x] 调研引擎候选：GPT-SoVITS（❌ TTS-only）、DDSP-SVC（❌ 无模型生态）、Applio（✅ 选定）
+- [x] 克隆 Applio 到 `third_party/Applio/`（shallow clone）
+- [x] Patch `rvc/configs/config.py`：MPS 检测 + Apple Silicon 优化（x_center=15）
+- [x] 安装依赖：noisereduce、transformers==4.44.2
+- [x] 自动下载：contentvec embedder (~280MB)、fcpe.pt (~41MB)、rmvpe.pt (~181MB)
+- [x] A/B 对比：Applio vs rvc-python，MCD 差异 < 0.1%，句尾处理更好
+- [x] **重写 `ai_song/convert.py`**：Applio `VoiceConverter` 替代 rvc-python 后端
+  - 移除：`_patch_torch_load()`、`_patch_rvc_device()`、`_detect_rvc_version()`
+  - 新增：`_get_voice_converter()`、`_ensure_vc()` 懒加载 Applio
+  - 更新 `ConvertConfig`：f0_method 默认 fcpe，新增 f0_autotune/split_audio/clean_audio/embedder_model
+- [x] 更新 `ai_song/__main__.py`：移除 device 参数，f0 选项改为 fcpe/rmvpe/crepe
+- [x] 集成测试：60s 片段（7.92s）+ 完整歌曲 255s（30.75s，8.3:1 实时比）
+- [x] 三轨混音产出：`v1.3_newsong_hayley_applio_三轨混音.wav`（255.4s，-15.9 LUFS）
+- [x] 上传 iCloud：`v1.3_test/v1.3_newsong_hayley_applio_三轨混音.wav`
+
+> **引擎升级总结**：
+> - **Applio**（IAHispano/Applio）：3k⭐，最新 release 2026-03-02（v3.6.2），3,831 commits
+> - 完全兼容 RVC v1/v2 `.pth` + `.index` 模型 — 21 个现有模型直接可用
+> - 原生 macOS MPS 支持（需 config.py patch）
+> - rvc-python 因 transformers 版本冲突已彻底不可用，Applio 是唯一工作的 RVC 后端
+> - 性能：255s 歌曲 30.75s 完成（M5 MPS，8.3:1 实时比）
+> - 用户确认："句子收尾处理更好"
+
+### 阶段二：伴唱声音转换
+
+> V1.2 伴唱保留原声，导致主唱和伴唱声音割裂。伴唱也需转换为同一音色。
+
+- [ ] 伴唱自动检测：分离后检测伴唱 RMS/dBFS，低于阈值（-40dBFS）判定"无伴唱"跳过
+- [ ] 伴唱转换：使用与主唱相同的模型/引擎转换伴唱
+- [ ] 伴唱效果链调整：伴唱混响更湿、更远（区别于主唱的"前方"定位）
+- [ ] 三轨混音集成到 `mix.py`：`mix_tracks()` 支持 `backing_vocals_path` 参数
+
+### 阶段三：智能变调
+
+> 目标：让声音保持在模型甜区。支持全局变调和局部变调（只对高音段变调）。
+
+- [ ] F0 分析工具：分析源人声 F0 分布，标记超出模型甜区的段落
+- [ ] 全局变调：自动推荐最佳 transpose 值，使 F0 中位数落在模型甜区中心
+- [ ] 局部变调（Bounce-Back）：对超出甜区的段落单独 pitch shift → RVC transpose=0 → shift 回
+  - 需要先按 F0 分析结果切分音频段落
+  - 每段独立处理后拼接
+- [ ] 伴奏联动变调：全局变调时伴奏跟随 shift，局部变调时伴奏不变
+- [ ] CLI 支持：`--auto-transpose`（自动全局）和 `--smart-transpose`（局部）
+
+### 阶段四：自动质量评估
+
+> 用于批量模型/参数对比时自动打分排序，减少人工试听量。
+
+- [ ] 集成 F0 曲线对比：转换后 vs 原始，计算音准偏差（RPA/RCA），跑调是最致命问题
+- [ ] 集成 UTMOSv2：对合成感/金属感/爆音敏感，快速筛掉有问题的版本
+- [ ] 评估 SingMOS-Pro：专为歌声训练的 MOS 预测（2025 年末发布，确认是否有可用包）
+- [ ] 综合评分：加权组合多个指标，输出排序 + 分数报告
+- [ ] CLI 入口：`python -m ai_song.evaluate --input converted.wav --reference original.wav`
+
+### 阶段五：换歌端到端验证
+
+> 用新歌跑完整 pipeline，验证所有升级的泛化性。
+
+- [x] 选一首新歌（用户提供 URL）：`https://www.bilibili.com/video/BV1rs4y1R7Xf/`
+- [x] 先按 V1.2 基线产出对比样本（下载 → 分离 → karaoke 分离 → Hayley 主唱转换 → 三轨混音）
+- [x] 输出到 iCloud Drive 试听：`ai_song_output/v1.2_new/v1.2_newsong_hayley_三轨混音.wav`
+- [ ] 完整 pipeline：下载 → 分离 → 主唱转换 → 伴唱转换 → 智能变调 → 混音 → 质量评估
+- [ ] 与 V1.2 效果对比，确认升级效果
+
+> **V1.2 新歌对比样本（2026-03-12）**
+> - 下载源：BV1rs4y1R7Xf（`v1.2_newsong_source.wav`）
+> - 转换参数：FCPE + protect=0.33 + index_rate=0.0 + transpose=0
+> - 混音参数：J 版本效果链（MixConfig 默认）
+> - 三轨：转换后主唱 + 原伴唱 + 伴奏
+> - 最终文件：`output/v1.2_new/v1.2_newsong_hayley_三轨混音.wav`
+> - iCloud：`~/Library/Mobile Documents/com~apple~CloudDocs/ai_song_output/v1.2_new/v1.2_newsong_hayley_三轨混音.wav`
+
+---
+
 ## 效果优化（归档 — 已合并到 V1.1）
 
 > 以下方案已整合到 V1.1 计划中，此处保留作为参考。

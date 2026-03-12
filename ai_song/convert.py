@@ -1,14 +1,10 @@
-"""Voice conversion using RVC models and instrumental pitch shifting."""
+"""Voice conversion using Applio RVC backend and instrumental pitch shifting."""
 
 from __future__ import annotations
 
-import os
-
-# PyTorch and faiss-cpu each bundle their own libomp.dylib on macOS.
-# Loading both triggers OMP Error #15 → SIGABRT during faiss.index.search().
-os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
-
 import logging
+import os
+import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,81 +14,13 @@ import soundfile as sf
 
 logger = logging.getLogger(__name__)
 
-
-def _patch_torch_load() -> None:
-    """Patch torch.load for PyTorch 2.6+ where weights_only defaults to True.
-
-    fairseq and rvc-python use torch.load without weights_only=False,
-    which breaks on PyTorch >=2.6. This patches the default back to False.
-    """
-    import functools
-
-    import torch
-
-    _original_load = torch.load
-
-    @functools.wraps(_original_load)
-    def _patched_load(*args: object, **kwargs: object) -> object:
-        if "weights_only" not in kwargs:
-            kwargs["weights_only"] = False
-        return _original_load(*args, **kwargs)
-
-    torch.load = _patched_load
-
-
-def _patch_rvc_device(device: str) -> None:
-    """Patch rvc-python Config to respect our device choice.
-
-    rvc-python's Config class is a singleton that auto-detects MPS on macOS
-    and overrides any device parameter. MPS causes Metal crashes on long
-    audio (>5 min) during rmvpe stft. This patch forces the Config to use
-    our specified device by disabling MPS detection when device is 'cpu'.
-    """
-    if device == "mps":
-        return  # Let rvc-python use MPS naturally
-
-    from unittest.mock import patch
-
-    # Patch has_mps to return False so Config falls through to CPU
-    import rvc_python.configs.config as rvc_config
-
-    original_has_mps = rvc_config.Config.has_mps
-
-    @staticmethod  # type: ignore[misc]
-    def _no_mps() -> bool:
-        return False
-
-    rvc_config.Config.has_mps = _no_mps
-
-    # Reset the singleton so Config can be re-created with correct device
-    rvc_config.Config.instance = None  # type: ignore[attr-defined]
-
-    logger.info("Patched rvc-python Config: MPS detection disabled, using %s", device)
-
-
-_patch_torch_load()
+APPLIO_DIR = Path(__file__).resolve().parent.parent / "third_party" / "Applio"
 
 DEFAULT_OUTPUT_DIR = Path("output/converted")
 
 
 class ConversionError(Exception):
     """Failed to convert voice."""
-
-
-def _detect_rvc_version(model_path: Path) -> str:
-    """Detect RVC model version (v1 or v2) from checkpoint weights.
-
-    v1 models use 256-dim embedding, v2 models use 768-dim.
-    """
-    import torch
-
-    cpt = torch.load(str(model_path), map_location="cpu", weights_only=False)
-    weight = cpt.get("weight", {})
-    emb_key = "enc_p.emb_phone.weight"
-    if emb_key in weight:
-        dim = weight[emb_key].shape[1]
-        return "v1" if dim == 256 else "v2"
-    return "v2"
 
 
 @dataclass
@@ -103,29 +31,66 @@ class ConvertConfig:
         model_path: Path to the RVC model (.pth file).
         index_path: Path to the feature index (.index file), optional.
         transpose: Vocal pitch shift in semitones (-12 to +12).
-        f0_method: Pitch extraction method (rmvpe, harvest, crepe).
+        f0_method: Pitch extraction method (fcpe, rmvpe, crepe).
         index_rate: Feature retrieval ratio (0.0-1.0). Higher = closer
             to training voice timbre.
-        filter_radius: Median filter radius for pitch (0-7).
-        rms_mix_rate: Volume envelope mix ratio (0.0-1.0).
-            0 = use converted voice envelope, 1 = use original envelope.
         protect: Consonant protection ratio (0.0-0.5).
             Higher = more protection for breath/plosive sounds.
+        volume_envelope: RMS mix rate (0.0-1.0).
+            0 = use converted voice envelope, 1 = use original envelope.
         instrumental_shift: Instrumental pitch shift in semitones.
             Safe range: -2 to +2.
-        device: Inference device (mps, cpu, cuda).
+        f0_autotune: Enable F0 autotune (snap to nearest note).
+        f0_autotune_strength: Autotune correction strength (0.0-1.0).
+        split_audio: Split long audio into chunks for processing.
+        clean_audio: Apply noise reduction after conversion.
+        clean_strength: Noise reduction strength (0.0-1.0).
+        embedder_model: Feature embedder (contentvec, chinese-hubert-base, etc.).
     """
 
     model_path: Path = field(default_factory=lambda: Path("model.pth"))
     index_path: Path | None = None
     transpose: int = 0
-    f0_method: str = "rmvpe"
-    index_rate: float = 0.7
-    filter_radius: int = 3
-    rms_mix_rate: float = 1.0
+    f0_method: str = "fcpe"
+    index_rate: float = 0.0
     protect: float = 0.33
+    volume_envelope: float = 1.0
     instrumental_shift: int = 0
-    device: str = "mps"
+    f0_autotune: bool = False
+    f0_autotune_strength: float = 1.0
+    split_audio: bool = False
+    clean_audio: bool = False
+    clean_strength: float = 0.5
+    embedder_model: str = "contentvec"
+
+
+def _get_voice_converter():
+    """Lazily import and return Applio VoiceConverter singleton."""
+    original_dir = os.getcwd()
+    applio_str = str(APPLIO_DIR)
+
+    if applio_str not in sys.path:
+        sys.path.insert(0, applio_str)
+
+    os.chdir(applio_str)
+    try:
+        from rvc.infer.infer import VoiceConverter
+        vc = VoiceConverter()
+        logger.info("Applio RVC engine loaded (device=%s)", vc.config.device)
+        return vc
+    finally:
+        os.chdir(original_dir)
+
+
+_vc_instance = None
+
+
+def _ensure_vc():
+    """Get or create the global VoiceConverter instance."""
+    global _vc_instance
+    if _vc_instance is None:
+        _vc_instance = _get_voice_converter()
+    return _vc_instance
 
 
 def convert_vocals(
@@ -133,7 +98,7 @@ def convert_vocals(
     output_path: Path,
     config: ConvertConfig,
 ) -> Path:
-    """Convert vocals using an RVC model.
+    """Convert vocals using an RVC model via Applio backend.
 
     Args:
         input_path: Path to the input vocal audio (WAV).
@@ -164,64 +129,60 @@ def convert_vocals(
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     try:
-        _patch_rvc_device(config.device)
-        from rvc_python.infer import RVCInference
-
-        logger.info("Loading RVC model: %s (device=%s)", model_path.name, config.device)
-        start = time.time()
-
-        rvc = RVCInference(device=config.device)
-
-        version = _detect_rvc_version(model_path)
-        logger.info("Detected RVC %s model", version)
-        rvc.load_model(str(model_path), version=version, index_path=index_str)
-        rvc.set_params(
-            f0up_key=config.transpose,
-            f0method=config.f0_method,
-            index_rate=config.index_rate,
-            filter_radius=config.filter_radius,
-            rms_mix_rate=config.rms_mix_rate,
-            protect=config.protect,
-        )
-
         logger.info(
-            "Converting: transpose=%+d, f0_method=%s",
+            "Converting: model=%s, transpose=%+d, f0=%s, index_rate=%.2f, protect=%.2f",
+            model_path.name,
             config.transpose,
             config.f0_method,
+            config.index_rate,
+            config.protect,
         )
+        start = time.time()
 
-        model_info = rvc.models[rvc.current_model]
-        file_index = model_info.get("index", "")
+        vc = _ensure_vc()
 
-        audio_opt = rvc.vc.vc_single(
-            sid=0,
-            input_audio_path=str(input_path),
-            f0_up_key=config.transpose,
-            f0_method=config.f0_method,
-            file_index=file_index,
-            index_rate=config.index_rate,
-            filter_radius=config.filter_radius,
-            resample_sr=0,
-            rms_mix_rate=config.rms_mix_rate,
-            protect=config.protect,
-            f0_file="",
-            file_index2="",
-        )
+        original_dir = os.getcwd()
+        os.chdir(str(APPLIO_DIR))
+        try:
+            vc.convert_audio(
+                audio_input_path=str(input_path.resolve()),
+                audio_output_path=str(output_path.resolve()),
+                model_path=str(model_path.resolve()),
+                index_path=index_str,
+                pitch=config.transpose,
+                f0_method=config.f0_method,
+                index_rate=config.index_rate,
+                volume_envelope=config.volume_envelope,
+                protect=config.protect,
+                split_audio=config.split_audio,
+                f0_autotune=config.f0_autotune,
+                f0_autotune_strength=config.f0_autotune_strength,
+                proposed_pitch=False,
+                proposed_pitch_threshold=155.0,
+                embedder_model=config.embedder_model,
+                clean_audio=config.clean_audio,
+                clean_strength=config.clean_strength,
+                export_format="WAV",
+            )
+        finally:
+            os.chdir(original_dir)
 
-        if isinstance(audio_opt, tuple):
-            error_msg = audio_opt[0] if audio_opt else "Unknown error"
-            raise ConversionError(f"RVC inference failed: {error_msg}")
-
-        sf.write(str(output_path), audio_opt, rvc.vc.tgt_sr)
+        if not output_path.exists():
+            raise ConversionError("Applio produced no output file")
 
         elapsed = time.time() - start
-        logger.info("Conversion complete in %.1fs: %s", elapsed, output_path)
+        info = sf.info(str(output_path))
+        logger.info(
+            "Conversion complete in %.1fs (%.1fs audio @ %dHz): %s",
+            elapsed,
+            info.duration,
+            info.samplerate,
+            output_path,
+        )
         return output_path
 
-    except ImportError as e:
-        raise ConversionError(
-            "rvc-python not installed. Run: pip install rvc-python"
-        ) from e
+    except ConversionError:
+        raise
     except Exception as e:
         raise ConversionError(f"Voice conversion failed: {e}") from e
 
@@ -347,7 +308,7 @@ def main() -> None:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Voice conversion with RVC and instrumental pitch shifting"
+        description="Voice conversion with Applio RVC and instrumental pitch shifting"
     )
     parser.add_argument("input", type=Path, help="Input vocal audio (WAV)")
     parser.add_argument(
@@ -370,15 +331,15 @@ def main() -> None:
     )
     parser.add_argument(
         "--f0-method",
-        choices=["rmvpe", "harvest", "crepe"],
-        default="rmvpe",
-        help="Pitch extraction method (default: rmvpe)",
+        choices=["fcpe", "rmvpe", "crepe"],
+        default="fcpe",
+        help="Pitch extraction method (default: fcpe)",
     )
     parser.add_argument(
         "--index-rate",
         type=float,
-        default=0.7,
-        help="Feature retrieval ratio 0.0-1.0 (default: 0.7)",
+        default=0.0,
+        help="Feature retrieval ratio 0.0-1.0 (default: 0.0)",
     )
     parser.add_argument(
         "--protect",
@@ -399,9 +360,19 @@ def main() -> None:
         help="Instrumental pitch shift in semitones (default: 0)",
     )
     parser.add_argument(
-        "--device",
-        default="mps",
-        help="Inference device: mps, cpu, cuda (default: mps)",
+        "--f0-autotune",
+        action="store_true",
+        help="Enable F0 autotune (snap to nearest note)",
+    )
+    parser.add_argument(
+        "--split-audio",
+        action="store_true",
+        help="Split long audio into chunks for processing",
+    )
+    parser.add_argument(
+        "--clean-audio",
+        action="store_true",
+        help="Apply noise reduction after conversion",
     )
     args = parser.parse_args()
 
@@ -415,7 +386,9 @@ def main() -> None:
         index_rate=args.index_rate,
         protect=args.protect,
         instrumental_shift=args.instrumental_shift,
-        device=args.device,
+        f0_autotune=args.f0_autotune,
+        split_audio=args.split_audio,
+        clean_audio=args.clean_audio,
     )
 
     if args.instrumental:
