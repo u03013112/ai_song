@@ -185,6 +185,46 @@ ai_song/
 
 当前测试最佳：**Hayley Williams**（RVC v2，600 epochs，摇滚嗓，穿透力强）
 
+## 调优指南
+
+### F0 Autotune（推荐开启）
+
+RVC 是音色替换，不是自动修音。原唱的微小跑调和 RVC 自身的 micro-pitch drift 都会导致转换后声音"飘"和"虚"。开启 `--f0-autotune` 可以将音高 snap 到最近的半音，显著提升听感。
+
+```bash
+# 在 convert.py 中设置
+ConvertConfig(
+    f0_autotune=True,
+    f0_autotune_strength=0.5,  # 0.0-1.0，推荐 0.5（修正跑调但保留表情）
+)
+```
+
+**实测效果**（P!NK 模型 Butter-Fly）：
+
+| 设置 | UTMOSv2 | 提升 |
+|------|---------|------|
+| autotune=off | 1.44 | — |
+| autotune=0.5 | **1.99** | **+38%** |
+| autotune=0.3 | 0.99 | -31%（中间状态反而差） |
+
+> 注意：开启 autotune 后 Pitch RPA 指标不再有参考价值（autotune 主动修改了 pitch contour）。以 UTMOSv2 和人耳听感为准。
+
+### 参数速查
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `f0_method` | `fcpe` | 高音区比 rmvpe 更稳定 |
+| `f0_autotune` | `True` | 修正 pitch drift，提升清晰度 |
+| `f0_autotune_strength` | `0.5` | 平衡修正与自然表达 |
+| `index_rate` | `0.5` | 有 .index 文件时使用，平衡音色与清晰度 |
+| `protect` | `0.33` | 保护辅音清晰度 |
+
+### 进阶提升方向
+
+1. **AI 增强**：转换后用 AnyEnhance (Amphion) 恢复高频细节（10k-15kHz）
+2. **前处理降噪**：分离后用 DeepFilterNet 清除残留噪音再喂 RVC
+3. **多版本叠层**：高/低 index_rate 分别转换，高音段用低 index 版本（更丝滑）
+
 ## 版本历史
 
 | 版本 | 主要变化 |
@@ -194,5 +234,6 @@ ai_song/
 | V1.2 | 21 模型 A/B 对比，Hayley Williams 选定 |
 | V1.3 | Applio 引擎、伴唱转换、智能变调、自动质量评估、端到端验证 |
 | V1.4 | Bus Reverb 统一空间感，解决人声与伴奏声学空间割裂问题 |
+| V1.4.1 | F0 Autotune 调优，UTMOSv2 +38%，高音稳定性显著改善 |
 
 详细开发记录见 [TODO.md](TODO.md)。
