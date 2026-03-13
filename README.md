@@ -148,9 +148,17 @@ URL
 
 ## 效果链
 
-主唱：Pre-Gain -3dB → HPF 80Hz → Compressor(-16dB/2.5:1) → EQ(body+presence+air) → Warmth 1.5dB → Limiter -3dB → Delay 80ms → Reverb(0.45/0.22)
+### 单轨效果（Individual Track Processing）
 
-伴唱：HPF 80Hz → Compressor(-20dB/2.0:1) → EQ → Limiter -6dB → Reverb(0.65/0.35)
+主唱：Pre-Gain -3dB → HPF 80Hz → Compressor(-16dB/2.5:1) → EQ(body+presence+air) → Warmth → Limiter -3dB → Delay → Reverb(轻量)
+
+伴唱：HPF 80Hz → Compressor(-20dB/2.0:1) → EQ → Limiter -6dB → Reverb(轻量)
+
+### Bus Reverb（统一空间感）
+
+三轨混合后施加共享 Bus Reverb（room=0.35, wet=0.10），让人声、伴唱、伴奏听起来在同一个声学空间内，避免"KTV贴伴奏"的割裂感。
+
+设计理念：单轨混响只做最小限度的 artifact 平滑，空间感统一交给 Bus Reverb。
 
 三轨 LUFS：主唱 -17 / 伴唱 -22 / 伴奏 -18
 
@@ -185,5 +193,6 @@ ai_song/
 | V1.1 | FCPE 升级、效果链调优（J 版本）、三轨混音 |
 | V1.2 | 21 模型 A/B 对比，Hayley Williams 选定 |
 | V1.3 | Applio 引擎、伴唱转换、智能变调、自动质量评估、端到端验证 |
+| V1.4 | Bus Reverb 统一空间感，解决人声与伴奏声学空间割裂问题 |
 
 详细开发记录见 [TODO.md](TODO.md)。
