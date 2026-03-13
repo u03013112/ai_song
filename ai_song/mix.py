@@ -81,6 +81,15 @@ class MixConfig:
         backing_reverb_damping: Backing reverb damping 0.0-1.0.
         backing_reverb_width: Backing reverb stereo width 0.0-1.0.
         backing_limiter_threshold_db: Backing limiter ceiling in dBFS.
+        bus_reverb: Whether to apply a shared bus reverb to the final
+            mix. This places all tracks (vocals, backing, instrumental)
+            into the same acoustic space, preventing the "KTV" effect
+            where vocals sound like they're in a different room.
+        bus_reverb_room_size: Bus reverb room size 0.0-1.0.
+        bus_reverb_wet: Bus reverb wet/dry mix 0.0-1.0. Keep low
+            (0.08-0.15) since this affects the entire mix.
+        bus_reverb_damping: Bus reverb high-frequency damping 0.0-1.0.
+        bus_reverb_width: Bus reverb stereo width 0.0-1.0.
     """
 
     # --- Loudness targets ---
@@ -124,10 +133,11 @@ class MixConfig:
     delay_mix: float = 0.08
     delay_feedback: float = 0.15
 
-    # --- Reverb ---
+    # --- Vocal track reverb (individual) ---
+    # Keep low — most spatial cohesion comes from the bus reverb.
     vocal_reverb: bool = True
     reverb_room_size: float = 0.45
-    reverb_wet: float = 0.22
+    reverb_wet: float = 0.10
     reverb_damping: float = 0.6
     reverb_width: float = 1.0
 
@@ -147,11 +157,19 @@ class MixConfig:
     backing_eq_presence_gain_db: float = 0.5
     backing_eq_air_gain_db: float = 1.0
     backing_reverb: bool = True
-    backing_reverb_room_size: float = 0.65
-    backing_reverb_wet: float = 0.35
+    backing_reverb_room_size: float = 0.55
+    backing_reverb_wet: float = 0.15
     backing_reverb_damping: float = 0.55
     backing_reverb_width: float = 1.0
     backing_limiter_threshold_db: float = -6.0
+
+    # --- Bus reverb (shared across all tracks) ---
+    # Applied to the final mix to unify acoustic space.
+    bus_reverb: bool = True
+    bus_reverb_room_size: float = 0.35
+    bus_reverb_wet: float = 0.10
+    bus_reverb_damping: float = 0.65
+    bus_reverb_width: float = 1.0
 
 
 def _measure_lufs(audio: np.ndarray, sample_rate: int) -> float:
@@ -460,6 +478,57 @@ def _apply_backing_vocal_effects(
     return processed.T
 
 
+def _apply_bus_reverb(
+    audio: np.ndarray, sample_rate: int, config: MixConfig
+) -> np.ndarray:
+    """Apply a shared bus reverb to the final mix.
+
+    This places all tracks into the same acoustic space, preventing
+    the effect where individually-reverbed vocals sound disconnected
+    from a dry instrumental.
+
+    Args:
+        audio: Mixed audio data (all tracks already summed).
+        sample_rate: Sample rate in Hz.
+        config: Mix configuration with bus reverb parameters.
+
+    Returns:
+        Audio with bus reverb applied.
+    """
+    if not config.bus_reverb:
+        return audio
+
+    from pedalboard import Pedalboard, Reverb
+
+    board = Pedalboard([
+        Reverb(
+            room_size=config.bus_reverb_room_size,
+            wet_level=config.bus_reverb_wet,
+            damping=config.bus_reverb_damping,
+            width=config.bus_reverb_width,
+        ),
+    ])
+
+    logger.info(
+        "Bus reverb: room=%.2f, wet=%.2f, damping=%.2f, width=%.2f",
+        config.bus_reverb_room_size,
+        config.bus_reverb_wet,
+        config.bus_reverb_damping,
+        config.bus_reverb_width,
+    )
+
+    if audio.ndim == 1:
+        audio_2d = audio[np.newaxis, :]
+    else:
+        audio_2d = audio.T
+
+    processed = board(audio_2d, sample_rate)
+
+    if audio.ndim == 1:
+        return processed.squeeze()
+    return processed.T
+
+
 def _apply_gain_db(audio: np.ndarray, gain_db: float) -> np.ndarray:
     """Apply gain in dB to audio.
 
@@ -649,6 +718,10 @@ def mix_tracks(
         mixed = vocals + instrumental
         if backing_vocals is not None:
             mixed = mixed + backing_vocals
+
+        # Step 5.5: Bus reverb — unify acoustic space across all tracks
+        mixed = _apply_bus_reverb(mixed, sample_rate, config)
+
         peak = np.abs(mixed).max()
         if peak > 1.0:
             logger.warning(
